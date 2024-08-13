@@ -23,4 +23,4 @@ set_target_properties(mgjson PROPERTIES PUBLIC_HEADER "mgjson.h")
 INSTALL(TARGETS mgjson 
         LIBRARY DESTINATION /usr/lib/
         PUBLIC_HEADER DESTINATION /usr/include/
-))
+)
