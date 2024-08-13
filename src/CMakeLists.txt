@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.1...3.27)
 
 project(
   mgjson
-  VERSION 1.0
+  VERSION 7.14
   LANGUAGES C
   )
 
