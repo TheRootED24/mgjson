@@ -1,5 +1,5 @@
 // Copyright (c) 2004-2013 Sergey Lyubka
-// Copyright (c) 2013-2022 Cesanta Software Limited
+// Copyright (c) 2013-2024 Cesanta Software Limited
 // All rights reserved
 //
 // This software is dual-licensed: you can redistribute it and/or modify
@@ -17,13 +17,17 @@
 //
 // SPDX-License-Identifier: GPL-2.0-only or commercial
 
+// NOTICE !!
+// STRIPPED VERSION, FOR JSON FUNCTIONALITY WITHOUT THE OVERHEAD ... where applicable
+
 #include "mgjson.h"
+#include <assert.h>
 
 #ifdef MG_ENABLE_LINES
 #line 1 "src/base64.c"
 #endif
 
-static int mg_b64idx(int c) {
+static int mg_base64_encode_single(int c) {
   if (c < 26) {
     return c + 'A';
   } else if (c < 52) {
@@ -35,7 +39,7 @@ static int mg_b64idx(int c) {
   }
 }
 
-static int mg_b64rev(int c) {
+static int mg_base64_decode_single(int c) {
   if (c >= 'A' && c <= 'Z') {
     return c - 'A';
   } else if (c >= 'a' && c <= 'z') {
@@ -53,24 +57,24 @@ static int mg_b64rev(int c) {
   }
 }
 
-int mg_base64_update(unsigned char ch, char *to, int n) {
-  int rem = (n & 3) % 3;
+size_t mg_base64_update(unsigned char ch, char *to, size_t n) {
+  unsigned long rem = (n & 3) % 3;
   if (rem == 0) {
-    to[n] = (char) mg_b64idx(ch >> 2);
+    to[n] = (char) mg_base64_encode_single(ch >> 2);
     to[++n] = (char) ((ch & 3) << 4);
   } else if (rem == 1) {
-    to[n] = (char) mg_b64idx(to[n] | (ch >> 4));
+    to[n] = (char) mg_base64_encode_single(to[n] | (ch >> 4));
     to[++n] = (char) ((ch & 15) << 2);
   } else {
-    to[n] = (char) mg_b64idx(to[n] | (ch >> 6));
-    to[++n] = (char) mg_b64idx(ch & 63);
+    to[n] = (char) mg_base64_encode_single(to[n] | (ch >> 6));
+    to[++n] = (char) mg_base64_encode_single(ch & 63);
     n++;
   }
   return n;
 }
 
-int mg_base64_final(char *to, int n) {
-  int saved = n;
+size_t mg_base64_final(char *to, size_t n) {
+  size_t saved = n;
   // printf("---[%.*s]\n", n, to);
   if (n & 3) n = mg_base64_update(0, to, n);
   if ((saved & 3) == 2) n--;
@@ -80,20 +84,27 @@ int mg_base64_final(char *to, int n) {
   return n;
 }
 
-int mg_base64_encode(const unsigned char *p, int n, char *to) {
-  int i, len = 0;
+size_t mg_base64_encode(const unsigned char *p, size_t n, char *to, size_t dl) {
+  size_t i, len = 0;
+  if (dl > 0) to[0] = '\0';
+  if (dl < ((n / 3) + (n % 3 ? 1 : 0)) * 4 + 1) return 0;
   for (i = 0; i < n; i++) len = mg_base64_update(p[i], to, len);
   len = mg_base64_final(to, len);
   return len;
 }
 
-int mg_base64_decode(const char *src, int n, char *dst) {
+size_t mg_base64_decode(const char *src, size_t n, char *dst, size_t dl) {
   const char *end = src == NULL ? NULL : src + n;  // Cannot add to NULL
-  int len = 0;
+  size_t len = 0;
+  if (dl < n / 4 * 3 + 1) goto fail;
   while (src != NULL && src + 3 < end) {
-    int a = mg_b64rev(src[0]), b = mg_b64rev(src[1]), c = mg_b64rev(src[2]),
-        d = mg_b64rev(src[3]);
-    if (a == 64 || a < 0 || b == 64 || b < 0 || c < 0 || d < 0) return 0;
+    int a = mg_base64_decode_single(src[0]),
+        b = mg_base64_decode_single(src[1]),
+        c = mg_base64_decode_single(src[2]),
+        d = mg_base64_decode_single(src[3]);
+    if (a == 64 || a < 0 || b == 64 || b < 0 || c < 0 || d < 0) {
+      goto fail;
+    }
     dst[len++] = (char) ((a << 2) | (b >> 4));
     if (src[2] != '=') {
       dst[len++] = (char) ((b << 4) | (c >> 2));
@@ -103,7 +114,11 @@ int mg_base64_decode(const char *src, int n, char *dst) {
   }
   dst[len] = '\0';
   return len;
+fail:
+  if (dl > 0) dst[0] = '\0';
+  return 0;
 }
+
 
 #ifdef MG_ENABLE_LINES
 #line 1 "src/fmt.c"
@@ -329,18 +344,10 @@ size_t mg_vxprintf(void (*out)(char, void *), void *param, const char *fmt,
   return n;
 }
 
+
 #ifdef MG_ENABLE_LINES
 #line 1 "src/iobuf.c"
 #endif
-
-
-// Not using memset for zeroing memory, cause it can be dropped by compiler
-// See https://github.com/cesanta/mongoose/pull/1265
-static void zeromem(volatile unsigned char *buf, size_t len) {
-  if (buf != NULL) {
-    while (len--) *buf++ = 0;
-  }
-}
 
 static size_t roundup(size_t size, size_t align) {
   return align == 0 ? size : (size + align - 1) / align * align;
@@ -350,7 +357,7 @@ int mg_iobuf_resize(struct mg_iobuf *io, size_t new_size) {
   int ok = 1;
   new_size = roundup(new_size, io->align);
   if (new_size == 0) {
-    zeromem(io->buf, io->size);
+    mg_bzero(io->buf, io->size);
     free(io->buf);
     io->buf = NULL;
     io->len = io->size = 0;
@@ -361,13 +368,13 @@ int mg_iobuf_resize(struct mg_iobuf *io, size_t new_size) {
     if (p != NULL) {
       size_t len = new_size < io->len ? new_size : io->len;
       if (len > 0 && io->buf != NULL) memmove(p, io->buf, len);
-      zeromem(io->buf, io->size);
+      mg_bzero(io->buf, io->size);
       free(io->buf);
       io->buf = (unsigned char *) p;
       io->size = new_size;
     } else {
       ok = 0;
-      //fprintf(stderr, "%ld->%ld", (uint64_t) io->size, (uint64_t) new_size));
+      //MG_ERROR(("%lld->%lld", (uint64_t) io->size, (uint64_t) new_size));
     }
   }
   return ok;
@@ -396,7 +403,7 @@ size_t mg_iobuf_del(struct mg_iobuf *io, size_t ofs, size_t len) {
   if (ofs > io->len) ofs = io->len;
   if (ofs + len > io->len) len = io->len - ofs;
   if (io->buf) memmove(io->buf + ofs, io->buf + ofs + len, io->len - ofs - len);
-  if (io->buf) zeromem(io->buf + io->len - len, len);
+  if (io->buf) mg_bzero(io->buf + io->len - len, len);
   io->len -= len;
   return len;
 }
@@ -404,6 +411,7 @@ size_t mg_iobuf_del(struct mg_iobuf *io, size_t ofs, size_t len) {
 void mg_iobuf_free(struct mg_iobuf *io) {
   mg_iobuf_resize(io, 0);
 }
+
 
 #ifdef MG_ENABLE_LINES
 #line 1 "src/json.c"
@@ -486,52 +494,52 @@ size_t mg_json_next(struct mg_str obj, size_t ofs, struct mg_str *key,
                     struct mg_str *val) {
   if (ofs >= obj.len) {
     ofs = 0;  // Out of boundaries, stop scanning
-  } else if (obj.len < 2 || (*obj.ptr != '{' && *obj.ptr != '[')) {
+  } else if (obj.len < 2 || (*obj.buf != '{' && *obj.buf != '[')) {
     ofs = 0;  // Not an array or object, stop
   } else {
-    struct mg_str sub = mg_str_n(obj.ptr + ofs, obj.len - ofs);
-    if (ofs == 0) ofs++, sub.ptr++, sub.len--;
-    if (*obj.ptr == '[') {  // Iterate over an array
+    struct mg_str sub = mg_str_n(obj.buf + ofs, obj.len - ofs);
+    if (ofs == 0) ofs++, sub.buf++, sub.len--;
+    if (*obj.buf == '[') {  // Iterate over an array
       int n = 0, o = mg_json_get(sub, "$", &n);
       if (n < 0 || o < 0 || (size_t) (o + n) > sub.len) {
         ofs = 0;  // Error parsing key, stop scanning
       } else {
         if (key) *key = mg_str_n(NULL, 0);
-        if (val) *val = mg_str_n(sub.ptr + o, (size_t) n);
-        ofs = (size_t) (&sub.ptr[o + n] - obj.ptr);
+        if (val) *val = mg_str_n(sub.buf + o, (size_t) n);
+        ofs = (size_t) (&sub.buf[o + n] - obj.buf);
       }
     } else {  // Iterate over an object
       int n = 0, o = mg_json_get(sub, "$", &n);
       if (n < 0 || o < 0 || (size_t) (o + n) > sub.len) {
         ofs = 0;  // Error parsing key, stop scanning
       } else {
-        if (key) *key = mg_str_n(sub.ptr + o, (size_t) n);
-        sub.ptr += o + n, sub.len -= (size_t) (o + n);
-        while (sub.len > 0 && *sub.ptr != ':') sub.len--, sub.ptr++;
-        if (sub.len > 0 && *sub.ptr == ':') sub.len--, sub.ptr++;
+        if (key) *key = mg_str_n(sub.buf + o, (size_t) n);
+        sub.buf += o + n, sub.len -= (size_t) (o + n);
+        while (sub.len > 0 && *sub.buf != ':') sub.len--, sub.buf++;
+        if (sub.len > 0 && *sub.buf == ':') sub.len--, sub.buf++;
         n = 0, o = mg_json_get(sub, "$", &n);
         if (n < 0 || o < 0 || (size_t) (o + n) > sub.len) {
           ofs = 0;  // Error parsing value, stop scanning
         } else {
-          if (val) *val = mg_str_n(sub.ptr + o, (size_t) n);
-          ofs = (size_t) (&sub.ptr[o + n] - obj.ptr);
+          if (val) *val = mg_str_n(sub.buf + o, (size_t) n);
+          ofs = (size_t) (&sub.buf[o + n] - obj.buf);
         }
       }
     }
-    //MG_INFO(("SUB ofs %u %.*s", ofs, sub.len, sub.ptr));
+    // MG_INFO(("SUB ofs %u %.*s", ofs, sub.len, sub.buf));
     while (ofs && ofs < obj.len &&
-           (obj.ptr[ofs] == ' ' || obj.ptr[ofs] == '\t' ||
-            obj.ptr[ofs] == '\n' || obj.ptr[ofs] == '\r')) {
+           (obj.buf[ofs] == ' ' || obj.buf[ofs] == '\t' ||
+            obj.buf[ofs] == '\n' || obj.buf[ofs] == '\r')) {
       ofs++;
     }
-    if (ofs && ofs < obj.len && obj.ptr[ofs] == ',') ofs++;
+    if (ofs && ofs < obj.len && obj.buf[ofs] == ',') ofs++;
     if (ofs > obj.len) ofs = 0;
   }
   return ofs;
 }
 
 int mg_json_get(struct mg_str json, const char *path, int *toklen) {
-  const char *s = json.ptr;
+  const char *s = json.buf;
   int len = (int) json.len;
   enum { S_VALUE, S_KEY, S_COLON, S_COMMA_OR_EOO } expecting = S_VALUE;
   unsigned char nesting[MG_JSON_MAX_DEPTH];
@@ -622,11 +630,11 @@ int mg_json_get(struct mg_str json, const char *path, int *toklen) {
           if (i + 1 + n >= len) return MG_JSON_NOT_FOUND;
           if (depth < ed) return MG_JSON_NOT_FOUND;
           if (depth == ed && path[pos - 1] != '.') return MG_JSON_NOT_FOUND;
-          // printf("K %s [%.*s] [%.*s] %d %d %d\n", path, pos, path, n,
-          //  &s[i + 1], n, depth, ed);
-          // NOTE(cpq): in the check sequence below is important.
-          // strncmp() must go first: it fails fast if the remaining length of
-          // the path is smaller than `n`.
+          // printf("K %s [%.*s] [%.*s] %d %d %d %d %d\n", path, pos, path, n,
+          //        &s[i + 1], n, depth, ed, ci, ei);
+          //  NOTE(cpq): in the check sequence below is important.
+          //  strncmp() must go first: it fails fast if the remaining length
+          //  of the path is smaller than `n`.
           if (depth == ed && path[pos - 1] == '.' &&
               strncmp(&s[i + 1], &path[pos], (size_t) n) == 0 &&
               (path[pos + n] == '\0' || path[pos + n] == '.' ||
@@ -658,6 +666,10 @@ int mg_json_get(struct mg_str json, const char *path, int *toklen) {
         } else if (c == ',') {
           expecting = (nesting[depth - 1] == '{') ? S_KEY : S_VALUE;
         } else if (c == ']' || c == '}') {
+          if (depth == ed && c == '}' && path[pos - 1] == '.')
+            return MG_JSON_NOT_FOUND;
+          if (depth == ed && c == ']' && path[pos - 1] == ',')
+            return MG_JSON_NOT_FOUND;
           MG_EOO('O');
           if (depth == ed && ei >= 0) ci++;
         } else {
@@ -669,11 +681,17 @@ int mg_json_get(struct mg_str json, const char *path, int *toklen) {
   return MG_JSON_NOT_FOUND;
 }
 
+struct mg_str mg_json_get_tok(struct mg_str json, const char *path) {
+  int len = 0, ofs = mg_json_get(json, path, &len);
+  return mg_str_n(ofs < 0 ? NULL : json.buf + ofs,
+                  (size_t) (len < 0 ? 0 : len));
+}
+
 bool mg_json_get_num(struct mg_str json, const char *path, double *v) {
   int n, toklen, found = 0;
   if ((n = mg_json_get(json, path, &toklen)) >= 0 &&
-      (json.ptr[n] == '-' || (json.ptr[n] >= '0' && json.ptr[n] <= '9'))) {
-    if (v != NULL) *v = mg_atod(json.ptr + n, toklen, NULL);
+      (json.buf[n] == '-' || (json.buf[n] >= '0' && json.buf[n] <= '9'))) {
+    if (v != NULL) *v = mg_atod(json.buf + n, toklen, NULL);
     found = 1;
   }
   return found;
@@ -681,8 +699,8 @@ bool mg_json_get_num(struct mg_str json, const char *path, double *v) {
 
 bool mg_json_get_bool(struct mg_str json, const char *path, bool *v) {
   int found = 0, off = mg_json_get(json, path, NULL);
-  if (off >= 0 && (json.ptr[off] == 't' || json.ptr[off] == 'f')) {
-    if (v != NULL) *v = json.ptr[off] == 't';
+  if (off >= 0 && (json.buf[off] == 't' || json.buf[off] == 'f')) {
+    if (v != NULL) *v = json.buf[off] == 't';
     found = 1;
   }
   return found;
@@ -691,21 +709,21 @@ bool mg_json_get_bool(struct mg_str json, const char *path, bool *v) {
 bool mg_json_unescape(struct mg_str s, char *to, size_t n) {
   size_t i, j;
   for (i = 0, j = 0; i < s.len && j < n; i++, j++) {
-    if (s.ptr[i] == '\\' && i + 5 < s.len && s.ptr[i + 1] == 'u') {
-      //  \uXXXX escape. We could process a simple one-byte chars
-      // \u00xx from the ASCII range. More complex chars would require
-      // dragging in a UTF8 library, which is too much for us
-      if (s.ptr[i + 2] != '0' || s.ptr[i + 3] != '0') return false;  // Give up
-      ((unsigned char *) to)[j] = (unsigned char) mg_unhexn(s.ptr + i + 4, 2);
-
+    if (s.buf[i] == '\\' && i + 5 < s.len && s.buf[i + 1] == 'u') {
+      //  \uXXXX escape. We process simple one-byte chars \u00xx within ASCII
+      //  range. More complex chars would require dragging in a UTF8 library,
+      //  which is too much for us
+      if (mg_str_to_num(mg_str_n(s.buf + i + 2, 4), 16, &to[j],
+                        sizeof(uint8_t)) == false)
+        return false;
       i += 5;
-    } else if (s.ptr[i] == '\\' && i + 1 < s.len) {
-      char c = json_esc(s.ptr[i + 1], 0);
+    } else if (s.buf[i] == '\\' && i + 1 < s.len) {
+      char c = json_esc(s.buf[i + 1], 0);
       if (c == 0) return false;
       to[j] = c;
       i++;
     } else {
-      to[j] = s.ptr[i];
+      to[j] = s.buf[i];
     }
   }
   if (j >= n) return false;
@@ -716,9 +734,9 @@ bool mg_json_unescape(struct mg_str s, char *to, size_t n) {
 char *mg_json_get_str(struct mg_str json, const char *path) {
   char *result = NULL;
   int len = 0, off = mg_json_get(json, path, &len);
-  if (off >= 0 && len > 1 && json.ptr[off] == '"') {
+  if (off >= 0 && len > 1 && json.buf[off] == '"') {
     if ((result = (char *) calloc(1, (size_t) len)) != NULL &&
-        !mg_json_unescape(mg_str_n(json.ptr + off + 1, (size_t) (len - 2)),
+        !mg_json_unescape(mg_str_n(json.buf + off + 1, (size_t) (len - 2)),
                           result, (size_t) len)) {
       free(result);
       result = NULL;
@@ -730,10 +748,11 @@ char *mg_json_get_str(struct mg_str json, const char *path) {
 char *mg_json_get_b64(struct mg_str json, const char *path, int *slen) {
   char *result = NULL;
   int len = 0, off = mg_json_get(json, path, &len);
-  if (off >= 0 && json.ptr[off] == '"' && len > 1 &&
+  if (off >= 0 && json.buf[off] == '"' && len > 1 &&
       (result = (char *) calloc(1, (size_t) len)) != NULL) {
-    int k = mg_base64_decode(json.ptr + off + 1, len - 2, result);
-    if (slen != NULL) *slen = k;
+    size_t k = mg_base64_decode(json.buf + off + 1, (size_t) (len - 2), result,
+                                (size_t) len);
+    if (slen != NULL) *slen = (int) k;
   }
   return result;
 }
@@ -741,9 +760,13 @@ char *mg_json_get_b64(struct mg_str json, const char *path, int *slen) {
 char *mg_json_get_hex(struct mg_str json, const char *path, int *slen) {
   char *result = NULL;
   int len = 0, off = mg_json_get(json, path, &len);
-  if (off >= 0 && json.ptr[off] == '"' && len > 1 &&
+  if (off >= 0 && json.buf[off] == '"' && len > 1 &&
       (result = (char *) calloc(1, (size_t) len / 2)) != NULL) {
-    mg_unhex(json.ptr + off + 1, (size_t) (len - 2), (uint8_t *) result);
+    int i;
+    for (i = 0; i < len - 2; i += 2) {
+      mg_str_to_num(mg_str_n(json.buf + off + 1 + i, 2), 16, &result[i >> 1],
+                    sizeof(uint8_t));
+    }
     result[len / 2 - 1] = '\0';
     if (slen != NULL) *slen = len / 2 - 1;
   }
@@ -757,61 +780,42 @@ long mg_json_get_long(struct mg_str json, const char *path, long dflt) {
   return result;
 }
 
+
 #ifdef MG_ENABLE_LINES
 #line 1 "src/str.c"
 #endif
 
-
 struct mg_str mg_str_s(const char *s) {
-  struct mg_str str = {s, s == NULL ? 0 : strlen(s)};
+  struct mg_str str = {(char *) s, s == NULL ? 0 : strlen(s)};
   return str;
 }
 
 struct mg_str mg_str_n(const char *s, size_t n) {
-  struct mg_str str = {s, n};
+  struct mg_str str = {(char *) s, n};
   return str;
 }
 
-int mg_lower(const char *s) {
-  int c = *s;
-  if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
-  return c;
-}
-
-int mg_ncasecmp(const char *s1, const char *s2, size_t len) {
-  int diff = 0;
-  if (len > 0) do {
-      diff = mg_lower(s1++) - mg_lower(s2++);
-    } while (diff == 0 && s1[-1] != '\0' && --len > 0);
-  return diff;
+static int mg_tolc(char c) {
+  return (c >= 'A' && c <= 'Z') ? c + 'a' - 'A' : c;
 }
 
 int mg_casecmp(const char *s1, const char *s2) {
-  return mg_ncasecmp(s1, s2, (size_t) ~0);
-}
-
-int mg_vcmp(const struct mg_str *s1, const char *s2) {
-  size_t n2 = strlen(s2), n1 = s1->len;
-  int r = strncmp(s1->ptr, s2, (n1 < n2) ? n1 : n2);
-  if (r == 0) return (int) (n1 - n2);
-  return r;
-}
-
-int mg_vcasecmp(const struct mg_str *str1, const char *str2) {
-  size_t n2 = strlen(str2), n1 = str1->len;
-  int r = mg_ncasecmp(str1->ptr, str2, (n1 < n2) ? n1 : n2);
-  if (r == 0) return (int) (n1 - n2);
-  return r;
+  int diff = 0;
+  do {
+    int c = mg_tolc(*s1++), d = mg_tolc(*s2++);
+    diff = c - d;
+  } while (diff == 0 && s1[-1] != '\0');
+  return diff;
 }
 
 struct mg_str mg_strdup(const struct mg_str s) {
   struct mg_str r = {NULL, 0};
-  if (s.len > 0 && s.ptr != NULL) {
+  if (s.len > 0 && s.buf != NULL) {
     char *sc = (char *) calloc(1, s.len + 1);
     if (sc != NULL) {
-      memcpy(sc, s.ptr, s.len);
+      memcpy(sc, s.buf, s.len);
       sc[s.len] = '\0';
-      r.ptr = sc;
+      r.buf = sc;
       r.len = s.len;
     }
   }
@@ -821,8 +825,8 @@ struct mg_str mg_strdup(const struct mg_str s) {
 int mg_strcmp(const struct mg_str str1, const struct mg_str str2) {
   size_t i = 0;
   while (i < str1.len && i < str2.len) {
-    int c1 = str1.ptr[i];
-    int c2 = str2.ptr[i];
+    int c1 = str1.buf[i];
+    int c2 = str2.buf[i];
     if (c1 < c2) return -1;
     if (c1 > c2) return 1;
     i++;
@@ -832,150 +836,241 @@ int mg_strcmp(const struct mg_str str1, const struct mg_str str2) {
   return 0;
 }
 
-const char *mg_strstr(const struct mg_str haystack,
-                      const struct mg_str needle) {
-  size_t i;
-  if (needle.len > haystack.len) return NULL;
-  if (needle.len == 0) return haystack.ptr;
-  for (i = 0; i <= haystack.len - needle.len; i++) {
-    if (memcmp(haystack.ptr + i, needle.ptr, needle.len) == 0) {
-      return haystack.ptr + i;
-    }
+int mg_strcasecmp(const struct mg_str str1, const struct mg_str str2) {
+  size_t i = 0;
+  while (i < str1.len && i < str2.len) {
+    int c1 = mg_tolc(str1.buf[i]);
+    int c2 = mg_tolc(str2.buf[i]);
+    if (c1 < c2) return -1;
+    if (c1 > c2) return 1;
+    i++;
   }
-  return NULL;
-}
-
-static bool is_space(int c) {
-  return c == ' ' || c == '\r' || c == '\n' || c == '\t';
-}
-
-struct mg_str mg_strstrip(struct mg_str s) {
-  while (s.len > 0 && is_space((int) *s.ptr)) s.ptr++, s.len--;
-  while (s.len > 0 && is_space((int) *(s.ptr + s.len - 1))) s.len--;
-  return s;
+  if (i < str1.len) return 1;
+  if (i < str2.len) return -1;
+  return 0;
 }
 
 bool mg_match(struct mg_str s, struct mg_str p, struct mg_str *caps) {
   size_t i = 0, j = 0, ni = 0, nj = 0;
-  if (caps) caps->ptr = NULL, caps->len = 0;
+  if (caps) caps->buf = NULL, caps->len = 0;
   while (i < p.len || j < s.len) {
-    if (i < p.len && j < s.len && (p.ptr[i] == '?' || s.ptr[j] == p.ptr[i])) {
+    if (i < p.len && j < s.len &&
+        (p.buf[i] == '?' ||
+         (p.buf[i] != '*' && p.buf[i] != '#' && s.buf[j] == p.buf[i]))) {
       if (caps == NULL) {
-      } else if (p.ptr[i] == '?') {
-        caps->ptr = &s.ptr[j], caps->len = 1;     // Finalize `?` cap
-        caps++, caps->ptr = NULL, caps->len = 0;  // Init next cap
-      } else if (caps->ptr != NULL && caps->len == 0) {
-        caps->len = (size_t) (&s.ptr[j] - caps->ptr);  // Finalize current cap
-        caps++, caps->len = 0, caps->ptr = NULL;       // Init next cap
+      } else if (p.buf[i] == '?') {
+        caps->buf = &s.buf[j], caps->len = 1;     // Finalize `?` cap
+        caps++, caps->buf = NULL, caps->len = 0;  // Init next cap
+      } else if (caps->buf != NULL && caps->len == 0) {
+        caps->len = (size_t) (&s.buf[j] - caps->buf);  // Finalize current cap
+        caps++, caps->len = 0, caps->buf = NULL;       // Init next cap
       }
       i++, j++;
-    } else if (i < p.len && (p.ptr[i] == '*' || p.ptr[i] == '#')) {
-      if (caps && !caps->ptr) caps->len = 0, caps->ptr = &s.ptr[j];  // Init cap
+    } else if (i < p.len && (p.buf[i] == '*' || p.buf[i] == '#')) {
+      if (caps && !caps->buf) caps->len = 0, caps->buf = &s.buf[j];  // Init cap
       ni = i++, nj = j + 1;
-    } else if (nj > 0 && nj <= s.len && (p.ptr[ni] == '#' || s.ptr[j] != '/')) {
+    } else if (nj > 0 && nj <= s.len && (p.buf[ni] == '#' || s.buf[j] != '/')) {
       i = ni, j = nj;
-      if (caps && caps->ptr == NULL && caps->len == 0) {
+      if (caps && caps->buf == NULL && caps->len == 0) {
         caps--, caps->len = 0;  // Restart previous cap
       }
     } else {
       return false;
     }
   }
-  if (caps && caps->ptr && caps->len == 0) {
-    caps->len = (size_t) (&s.ptr[j] - caps->ptr);
+  if (caps && caps->buf && caps->len == 0) {
+    caps->len = (size_t) (&s.buf[j] - caps->buf);
   }
   return true;
 }
 
-bool mg_globmatch(const char *s1, size_t n1, const char *s2, size_t n2) {
-  return mg_match(mg_str_n(s2, n2), mg_str_n(s1, n1), NULL);
-}
-
-static size_t mg_nce(const char *s, size_t n, size_t ofs, size_t *koff,
-                     size_t *klen, size_t *voff, size_t *vlen, char delim) {
-  size_t kvlen, kl;
-  for (kvlen = 0; ofs + kvlen < n && s[ofs + kvlen] != delim;) kvlen++;
-  for (kl = 0; kl < kvlen && s[ofs + kl] != '=';) kl++;
-  if (koff != NULL) *koff = ofs;
-  if (klen != NULL) *klen = kl;
-  if (voff != NULL) *voff = kl < kvlen ? ofs + kl + 1 : 0;
-  if (vlen != NULL) *vlen = kl < kvlen ? kvlen - kl - 1 : 0;
-  ofs += kvlen + 1;
-  return ofs > n ? n : ofs;
-}
-
-bool mg_split(struct mg_str *s, struct mg_str *k, struct mg_str *v, char sep) {
-  size_t koff = 0, klen = 0, voff = 0, vlen = 0, off = 0;
-  if (s->ptr == NULL || s->len == 0) return 0;
-  off = mg_nce(s->ptr, s->len, 0, &koff, &klen, &voff, &vlen, sep);
-  if (k != NULL) *k = mg_str_n(s->ptr + koff, klen);
-  if (v != NULL) *v = mg_str_n(s->ptr + voff, vlen);
-  *s = mg_str_n(s->ptr + off, s->len - off);
-  return off > 0;
-}
-
-bool mg_commalist(struct mg_str *s, struct mg_str *k, struct mg_str *v) {
-  return mg_split(s, k, v, ',');
-}
-
-char *mg_hex(const void *buf, size_t len, char *to) {
-  const unsigned char *p = (const unsigned char *) buf;
-  const char *hex = "0123456789abcdef";
-  size_t i = 0;
-  for (; len--; p++) {
-    to[i++] = hex[p[0] >> 4];
-    to[i++] = hex[p[0] & 0x0f];
-  }
-  to[i] = '\0';
-  return to;
-}
-
-static unsigned char mg_unhex_nimble(unsigned char c) {
-  return (c >= '0' && c <= '9')   ? (unsigned char) (c - '0')
-         : (c >= 'A' && c <= 'F') ? (unsigned char) (c - '7')
-                                  : (unsigned char) (c - 'W');
-}
-
-unsigned long mg_unhexn(const char *s, size_t len) {
-  unsigned long i = 0, v = 0;
-  for (i = 0; i < len; i++) v <<= 4, v |= mg_unhex_nimble(((uint8_t *) s)[i]);
-  return v;
-}
-
-void mg_unhex(const char *buf, size_t len, unsigned char *to) {
-  size_t i;
-  for (i = 0; i < len; i += 2) {
-    to[i >> 1] = (unsigned char) mg_unhexn(&buf[i], 2);
+bool mg_span(struct mg_str s, struct mg_str *a, struct mg_str *b, char sep) {
+  if (s.len == 0 || s.buf == NULL) {
+    return false;  // Empty string, nothing to span - fail
+  } else {
+    size_t len = 0;
+    while (len < s.len && s.buf[len] != sep) len++;  // Find separator
+    if (a) *a = mg_str_n(s.buf, len);                // Init a
+    if (b) *b = mg_str_n(s.buf + len, s.len - len);  // Init b
+    if (b && len < s.len) b->buf++, b->len--;        // Skip separator
+    return true;
   }
 }
 
-char *mg_remove_double_dots(char *s) {
-  char *saved = s, *p = s;
-  while (*s != '\0') {
-    *p++ = *s++;
-    if (s[-1] == '/' || s[-1] == '\\') {
-      while (s[0] != '\0') {
-        if (s[0] == '/' || s[0] == '\\') {
-          s++;
-        } else if (s[0] == '.' && s[1] == '.' &&
-                   (s[2] == '/' || s[2] == '\\')) {
-          s += 2;
-        } else {
-          break;
-        }
-      }
+bool mg_str_to_num(struct mg_str str, int base, void *val, size_t val_len) {
+  size_t i = 0, ndigits = 0;
+  uint64_t max = val_len == sizeof(uint8_t)    ? 0xFF
+                 : val_len == sizeof(uint16_t) ? 0xFFFF
+                 : val_len == sizeof(uint32_t) ? 0xFFFFFFFF
+                                               : (uint64_t) ~0;
+  uint64_t result = 0;
+  if (max == (uint64_t) ~0 && val_len != sizeof(uint64_t)) return false;
+  if (base == 0 && str.len >= 2) {
+    if (str.buf[i] == '0') {
+      i++;
+      base = str.buf[i] == 'b' ? 2 : str.buf[i] == 'x' ? 16 : 10;
+      if (base != 10) ++i;
+    } else {
+      base = 10;
     }
   }
-  *p = '\0';
-  return saved;
+  switch (base) {
+    case 2:
+      while (i < str.len && (str.buf[i] == '0' || str.buf[i] == '1')) {
+        uint64_t digit = (uint64_t) (str.buf[i] - '0');
+        if (result > max / 2) return false;  // Overflow
+        result *= 2;
+        if (result > max - digit) return false;  // Overflow
+        result += digit;
+        i++, ndigits++;
+      }
+      break;
+    case 10:
+      while (i < str.len && str.buf[i] >= '0' && str.buf[i] <= '9') {
+        uint64_t digit = (uint64_t) (str.buf[i] - '0');
+        if (result > max / 10) return false;  // Overflow
+        result *= 10;
+        if (result > max - digit) return false;  // Overflow
+        result += digit;
+        i++, ndigits++;
+      }
+      break;
+    case 16:
+      while (i < str.len) {
+        char c = str.buf[i];
+        uint64_t digit = (c >= '0' && c <= '9')   ? (uint64_t) (c - '0')
+                         : (c >= 'A' && c <= 'F') ? (uint64_t) (c - '7')
+                         : (c >= 'a' && c <= 'f') ? (uint64_t) (c - 'W')
+                                                  : (uint64_t) ~0;
+        if (digit == (uint64_t) ~0) break;
+        if (result > max / 16) return false;  // Overflow
+        result *= 16;
+        if (result > max - digit) return false;  // Overflow
+        result += digit;
+        i++, ndigits++;
+      }
+      break;
+    default:
+      return false;
+  }
+  if (ndigits == 0) return false;
+  if (i != str.len) return false;
+  if (val_len == 1) {
+    *((uint8_t *) val) = (uint8_t) result;
+  } else if (val_len == 2) {
+    *((uint16_t *) val) = (uint16_t) result;
+  } else if (val_len == 4) {
+    *((uint32_t *) val) = (uint32_t) result;
+  } else {
+    *((uint64_t *) val) = (uint64_t) result;
+  }
+  return true;
 }
+
+
+#ifdef MG_ENABLE_LINES
+#line 1 "src/util.c"
+#endif
+
+// Not using memset for zeroing memory, cause it can be dropped by compiler
+// See https://github.com/cesanta/mongoose/pull/1265
+void mg_bzero(volatile unsigned char *buf, size_t len) {
+  if (buf != NULL) {
+    while (len--) *buf++ = 0;
+  }
+}
+
+#if MG_ENABLE_CUSTOM_RANDOM
+#else
+void mg_random(void *buf, size_t len) {
+  bool done = false;
+  unsigned char *p = (unsigned char *) buf;
+#if MG_ARCH == MG_ARCH_UNIX
+  FILE *fp = fopen("/dev/urandom", "rb");
+  if (fp != NULL) {
+    if (fread(buf, 1, len, fp) == len) done = true;
+    fclose(fp);
+  }
+#endif
+  // If everything above did not work, fallback to a pseudo random generator
+  while (!done && len--) *p++ = (unsigned char) (rand() & 255);
+}
+#endif
+
+char *mg_random_str(char *buf, size_t len) {
+  size_t i;
+  mg_random(buf, len);
+  for (i = 0; i < len; i++) {
+    uint8_t c = ((uint8_t *) buf)[i] % 62U;
+    buf[i] = i == len - 1 ? (char) '\0'            // 0-terminate last byte
+             : c < 26     ? (char) ('a' + c)       // lowercase
+             : c < 52     ? (char) ('A' + c - 26)  // uppercase
+                          : (char) ('0' + c - 52);     // numeric
+  }
+  return buf;
+}
+
+uint32_t mg_ntohl(uint32_t net) {
+  uint8_t data[4] = {0, 0, 0, 0};
+  memcpy(&data, &net, sizeof(data));
+  return (((uint32_t) data[3]) << 0) | (((uint32_t) data[2]) << 8) |
+         (((uint32_t) data[1]) << 16) | (((uint32_t) data[0]) << 24);
+}
+
+uint16_t mg_ntohs(uint16_t net) {
+  uint8_t data[2] = {0, 0};
+  memcpy(&data, &net, sizeof(data));
+  return (uint16_t) ((uint16_t) data[1] | (((uint16_t) data[0]) << 8));
+}
+
+uint32_t mg_crc32(uint32_t crc, const char *buf, size_t len) {
+  static const uint32_t crclut[16] = {
+      // table for polynomial 0xEDB88320 (reflected)
+      0x00000000, 0x1DB71064, 0x3B6E20C8, 0x26D930AC, 0x76DC4190, 0x6B6B51F4,
+      0x4DB26158, 0x5005713C, 0xEDB88320, 0xF00F9344, 0xD6D6A3E8, 0xCB61B38C,
+      0x9B64C2B0, 0x86D3D2D4, 0xA00AE278, 0xBDBDF21C};
+  crc = ~crc;
+  while (len--) {
+    uint8_t b = *(uint8_t *) buf++;
+    crc = crclut[(crc ^ b) & 0x0F] ^ (crc >> 4);
+    crc = crclut[(crc ^ (b >> 4)) & 0x0F] ^ (crc >> 4);
+  }
+  return ~crc;
+}
+
+
+#if MG_ENABLE_CUSTOM_MILLIS
+#else
+uint64_t mg_millis(void) {
+#if MG_ARCH == MG_ARCH_UNIX
+  struct timespec ts = {0, 0};
+  // See #1615 - prefer monotonic clock
+  #define CLOCK_REALTIME			0
+        #define CLOCK_MONOTONIC			1
+#if defined(CLOCK_MONOTONIC_RAW)
+  // Raw hardware-based time that is not subject to NTP adjustment
+  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+#elif defined(CLOCK_MONOTONIC)
+  // Affected by the incremental adjustments performed by adjtime and NTP
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+#else
+  // Affected by discontinuous jumps in the system time and by the incremental
+  // adjustments performed by adjtime and NTP
+  clock_gettime(CLOCK_REALTIME, &ts);
+#endif
+  return ((uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000);
+#elif defined(ARDUINO)
+  return (uint64_t) millis();
+#else
+  return (uint64_t) (time(NULL) * 1000);
+#endif
+}
+#endif
+
 
 #ifdef MG_ENABLE_LINES
 #line 1 "src/printf.c"
 #endif
-
-
-
 
 size_t mg_queue_vprintf(struct mg_queue *q, const char *fmt, va_list *ap) {
   size_t len = mg_snprintf(NULL, 0, fmt, ap);
@@ -1053,7 +1148,6 @@ void mg_pfn_stdout(char c, void *param) {
   (void) param;
 }
 
-
 static char mg_esc(int c, bool esc) {
   const char *p, *esc1 = "\b\f\n\r\t\\\"", *esc2 = "bfnrt\\\"";
   for (p = esc ? esc1 : esc2; *p != '\0'; p++) {
@@ -1121,13 +1215,14 @@ size_t mg_print_esc(void (*out)(char, void *), void *arg, va_list *ap) {
   return qcpy(out, arg, p, len);
 }
 
+
 #ifdef MG_ENABLE_LINES
 #line 1 "src/queue.c"
 #endif
 
-
-
-#if defined(__GNUC__) || defined(__clang__)
+#if (defined(__GNUC__) && (__GNUC__ > 4) ||                                \
+     (defined(__GNUC_MINOR__) && __GNUC__ == 4 && __GNUC_MINOR__ >= 1)) || \
+    defined(__clang__)
 #define MG_MEMORY_BARRIER() __sync_synchronize()
 #elif defined(_MSC_VER) && _MSC_VER >= 1700
 #define MG_MEMORY_BARRIER() MemoryBarrier()
@@ -1206,4 +1301,3 @@ void mg_queue_del(struct mg_queue *q, size_t len) {
   q->tail += len + sizeof(uint32_t);
   assert(q->tail + sizeof(uint32_t) <= q->size);
 }
-
