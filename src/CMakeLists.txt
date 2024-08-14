@@ -18,4 +18,9 @@ add_library(mgjson SHARED mgjson.c)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fpic")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3")
 target_link_libraries(mgjson m)
-install(TARGETS mgjson DESTINATION /usr/lib/)
+set_target_properties(mgjson PROPERTIES PUBLIC_HEADER "mgjson.h")
+
+INSTALL(TARGETS mgjson 
+        LIBRARY DESTINATION /usr/lib/
+        PUBLIC_HEADER DESTINATION /usr/include/
+)
