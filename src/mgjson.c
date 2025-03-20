@@ -27,6 +27,7 @@
 #line 1 "src/base64.c"
 #endif
 
+
 static int mg_base64_encode_single(int c) {
   if (c < 26) {
     return c + 'A';
@@ -124,6 +125,9 @@ fail:
 #line 1 "src/fmt.c"
 #endif
 
+
+
+
 static bool is_digit(int c) {
   return c >= '0' && c <= '9';
 }
@@ -170,28 +174,36 @@ static size_t mg_dtoa(char *dst, size_t dstlen, double d, int width, bool tz) {
 
   // Round
   saved = d;
-  mul = 1.0;
-  while (d >= 10.0 && d / mul >= 10.0) mul *= 10.0;
+  if (tz) {
+    mul = 1.0;
+    while (d >= 10.0 && d / mul >= 10.0) mul *= 10.0;
+  } else {
+    mul = 0.1;
+  }
+
   while (d <= 1.0 && d / mul <= 1.0) mul /= 10.0;
   for (i = 0, t = mul * 5; i < width; i++) t /= 10.0;
+
   d += t;
+
   // Calculate exponent, and 'mul' for scientific representation
   mul = 1.0;
   while (d >= 10.0 && d / mul >= 10.0) mul *= 10.0, e++;
   while (d < 1.0 && d / mul < 1.0) mul /= 10.0, e--;
   // printf(" --> %g %d %g %g\n", saved, e, t, mul);
 
-  if (e >= width && width > 1) {
+  if (tz && e >= width && width > 1) {
     n = (int) mg_dtoa(buf, sizeof(buf), saved / mul, width, tz);
     // printf(" --> %.*g %d [%.*s]\n", 10, d / t, e, n, buf);
     n += addexp(buf + s + n, e, '+');
     return mg_snprintf(dst, dstlen, "%.*s", n, buf);
-  } else if (e <= -width && width > 1) {
+  } else if (tz && e <= -width && width > 1) {
     n = (int) mg_dtoa(buf, sizeof(buf), saved / mul, width, tz);
     // printf(" --> %.*g %d [%.*s]\n", 10, d / mul, e, n, buf);
     n += addexp(buf + s + n, -e, '-');
     return mg_snprintf(dst, dstlen, "%.*s", n, buf);
   } else {
+    int targ_width = width;
     for (i = 0, t = mul; t >= 1.0 && s + n < (int) sizeof(buf); i++) {
       int ch = (int) (d / t);
       if (n > 0 || ch > 0) buf[s + n++] = (char) (ch + '0');
@@ -203,15 +215,17 @@ static size_t mg_dtoa(char *dst, size_t dstlen, double d, int width, bool tz) {
     while (t >= 1.0 && n + s < (int) sizeof(buf)) buf[n++] = '0', t /= 10.0;
     if (s + n < (int) sizeof(buf)) buf[n + s++] = '.';
     // printf(" 1--> [%g] -> [%.*s]\n", saved, s + n, buf);
-    for (i = 0, t = 0.1; s + n < (int) sizeof(buf) && n < width; i++) {
+    if (!tz && n > 0) targ_width = width + n;
+    for (i = 0, t = 0.1; s + n < (int) sizeof(buf) && n < targ_width; i++) {
       int ch = (int) (d / t);
       buf[s + n++] = (char) (ch + '0');
       d -= ch * t;
       t /= 10.0;
     }
   }
+
   while (tz && n > 0 && buf[s + n - 1] == '0') n--;  // Trim trailing zeroes
-  if (n > 0 && buf[s + n - 1] == '.') n--;           // Trim trailing dot
+  if (tz && n > 0 && buf[s + n - 1] == '.') n--;           // Trim trailing dot
   n += s;
   if (n >= (int) sizeof(buf)) n = (int) sizeof(buf) - 1;
   buf[n] = '\0';
@@ -349,6 +363,10 @@ size_t mg_vxprintf(void (*out)(char, void *), void *param, const char *fmt,
 #line 1 "src/iobuf.c"
 #endif
 
+
+
+
+
 static size_t roundup(size_t size, size_t align) {
   return align == 0 ? size : (size + align - 1) / align * align;
 }
@@ -374,7 +392,6 @@ int mg_iobuf_resize(struct mg_iobuf *io, size_t new_size) {
       io->size = new_size;
     } else {
       ok = 0;
-      //MG_ERROR(("%lld->%lld", (uint64_t) io->size, (uint64_t) new_size));
     }
   }
   return ok;
@@ -416,6 +433,9 @@ void mg_iobuf_free(struct mg_iobuf *io) {
 #ifdef MG_ENABLE_LINES
 #line 1 "src/json.c"
 #endif
+
+
+
 
 static const char *escapeseq(int esc) {
   return esc ? "\b\f\n\r\t\\\"" : "bfnrt\\\"";
@@ -785,6 +805,7 @@ long mg_json_get_long(struct mg_str json, const char *path, long dflt) {
 #line 1 "src/str.c"
 #endif
 
+
 struct mg_str mg_str_s(const char *s) {
   struct mg_str str = {(char *) s, s == NULL ? 0 : strlen(s)};
   return str;
@@ -972,6 +993,8 @@ bool mg_str_to_num(struct mg_str str, int base, void *val, size_t val_len) {
 #line 1 "src/util.c"
 #endif
 
+
+
 // Not using memset for zeroing memory, cause it can be dropped by compiler
 // See https://github.com/cesanta/mongoose/pull/1265
 void mg_bzero(volatile unsigned char *buf, size_t len) {
@@ -982,18 +1005,52 @@ void mg_bzero(volatile unsigned char *buf, size_t len) {
 
 #if MG_ENABLE_CUSTOM_RANDOM
 #else
-void mg_random(void *buf, size_t len) {
-  bool done = false;
+bool mg_random(void *buf, size_t len) {
+  bool success = false;
   unsigned char *p = (unsigned char *) buf;
-#if MG_ARCH == MG_ARCH_UNIX
+#if MG_ARCH == MG_ARCH_ESP32
+  success = true;
+#elif MG_ARCH == MG_ARCH_PICOSDK
+  while (len--) *p++ = (unsigned char) (get_rand_32() & 255);
+  success = true;
+#elif MG_ARCH == MG_ARCH_WIN32
+#if defined(_MSC_VER) && _MSC_VER < 1700
+  static bool initialised = false;
+  static HCRYPTPROV hProv;
+  // CryptGenRandom() implementation earlier than 2008 is weak, see
+  // https://en.wikipedia.org/wiki/CryptGenRandom
+  if (!initialised) {
+    initialised = CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_FULL,
+                                      CRYPT_VERIFYCONTEXT);
+  }
+  if (initialised) success = CryptGenRandom(hProv, len, p);
+#else
+  size_t i;
+  for (i = 0; i < len; i++) {
+    unsigned int rand_v;
+    if (rand_s(&rand_v) == 0) {
+      p[i] = (unsigned char) (rand_v & 255);
+    } else {
+      break;
+    }
+  }
+  success = (i == len);
+#endif
+
+
+#elif MG_ARCH == MG_ARCH_UNIX
   FILE *fp = fopen("/dev/urandom", "rb");
   if (fp != NULL) {
-    if (fread(buf, 1, len, fp) == len) done = true;
+    if (fread(buf, 1, len, fp) == len) success = true;
     fclose(fp);
   }
 #endif
   // If everything above did not work, fallback to a pseudo random generator
-  while (!done && len--) *p++ = (unsigned char) (rand() & 255);
+  if (success == false) {
+    fprintf(stderr, "Weak RNG: using rand()");
+    while (len--) *p++ = (unsigned char) (rand() & 255);
+  }
+  return success;
 }
 #endif
 
@@ -1008,19 +1065,6 @@ char *mg_random_str(char *buf, size_t len) {
                           : (char) ('0' + c - 52);     // numeric
   }
   return buf;
-}
-
-uint32_t mg_ntohl(uint32_t net) {
-  uint8_t data[4] = {0, 0, 0, 0};
-  memcpy(&data, &net, sizeof(data));
-  return (((uint32_t) data[3]) << 0) | (((uint32_t) data[2]) << 8) |
-         (((uint32_t) data[1]) << 16) | (((uint32_t) data[0]) << 24);
-}
-
-uint16_t mg_ntohs(uint16_t net) {
-  uint8_t data[2] = {0, 0};
-  memcpy(&data, &net, sizeof(data));
-  return (uint16_t) ((uint16_t) data[1] | (((uint16_t) data[0]) << 8));
 }
 
 uint32_t mg_crc32(uint32_t crc, const char *buf, size_t len) {
@@ -1038,15 +1082,30 @@ uint32_t mg_crc32(uint32_t crc, const char *buf, size_t len) {
   return ~crc;
 }
 
+bool mg_path_is_sane(const struct mg_str path) {
+  const char *s = path.buf;
+  size_t n = path.len;
+  if (path.buf[0] == '.' && path.buf[1] == '.') return false;  // Starts with ..
+  for (; s[0] != '\0' && n > 0; s++, n--) {
+    if ((s[0] == '/' || s[0] == '\\') && n >= 2) {   // Subdir?
+      if (s[1] == '.' && s[2] == '.') return false;  // Starts with ..
+    }
+  }
+  return true;
+}
 
 #if MG_ENABLE_CUSTOM_MILLIS
 #else
 uint64_t mg_millis(void) {
-#if MG_ARCH == MG_ARCH_UNIX
+#if MG_ARCH == MG_ARCH_WIN32
+  return GetTickCount();
+#elif MG_ARCH == MG_ARCH_UNIX && defined(__APPLE__)
+  // Apple CLOCK_MONOTONIC_RAW is equivalent to CLOCK_BOOTTIME on linux
+  // Apple CLOCK_UPTIME_RAW is equivalent to CLOCK_MONOTONIC_RAW on linux
+  return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000000;
+#elif MG_ARCH == MG_ARCH_UNIX
   struct timespec ts = {0, 0};
   // See #1615 - prefer monotonic clock
-  #define CLOCK_REALTIME			0
-        #define CLOCK_MONOTONIC			1
 #if defined(CLOCK_MONOTONIC_RAW)
   // Raw hardware-based time that is not subject to NTP adjustment
   clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
@@ -1059,18 +1118,28 @@ uint64_t mg_millis(void) {
   clock_gettime(CLOCK_REALTIME, &ts);
 #endif
   return ((uint64_t) ts.tv_sec * 1000 + (uint64_t) ts.tv_nsec / 1000000);
-#elif defined(ARDUINO)
-  return (uint64_t) millis();
 #else
   return (uint64_t) (time(NULL) * 1000);
 #endif
 }
 #endif
 
+// network format equates big endian order
+uint16_t mg_ntohs(uint16_t net) {
+  return MG_LOAD_BE16(&net);
+}
+
+uint32_t mg_ntohl(uint32_t net) {
+  return MG_LOAD_BE32(&net);
+}
+
 
 #ifdef MG_ENABLE_LINES
 #line 1 "src/printf.c"
 #endif
+
+
+
 
 size_t mg_queue_vprintf(struct mg_queue *q, const char *fmt, va_list *ap) {
   size_t len = mg_snprintf(NULL, 0, fmt, ap);
@@ -1148,6 +1217,33 @@ void mg_pfn_stdout(char c, void *param) {
   (void) param;
 }
 
+static size_t print_ip4(void (*out)(char, void *), void *arg, uint8_t *p) {
+  return mg_xprintf(out, arg, "%d.%d.%d.%d", p[0], p[1], p[2], p[3]);
+}
+
+static size_t print_ip6(void (*out)(char, void *), void *arg, uint16_t *p) {
+  return mg_xprintf(out, arg, "[%x:%x:%x:%x:%x:%x:%x:%x]", mg_ntohs(p[0]),
+                    mg_ntohs(p[1]), mg_ntohs(p[2]), mg_ntohs(p[3]),
+                    mg_ntohs(p[4]), mg_ntohs(p[5]), mg_ntohs(p[6]),
+                    mg_ntohs(p[7]));
+}
+
+size_t mg_print_ip4(void (*out)(char, void *), void *arg, va_list *ap) {
+  uint8_t *p = va_arg(*ap, uint8_t *);
+  return print_ip4(out, arg, p);
+}
+
+size_t mg_print_ip6(void (*out)(char, void *), void *arg, va_list *ap) {
+  uint16_t *p = va_arg(*ap, uint16_t *);
+  return print_ip6(out, arg, p);
+}
+
+size_t mg_print_mac(void (*out)(char, void *), void *arg, va_list *ap) {
+  uint8_t *p = va_arg(*ap, uint8_t *);
+  return mg_xprintf(out, arg, "%02x:%02x:%02x:%02x:%02x:%02x", p[0], p[1], p[2],
+                    p[3], p[4], p[5]);
+}
+
 static char mg_esc(int c, bool esc) {
   const char *p, *esc1 = "\b\f\n\r\t\\\"", *esc2 = "bfnrt\\\"";
   for (p = esc ? esc1 : esc2; *p != '\0'; p++) {
@@ -1215,10 +1311,11 @@ size_t mg_print_esc(void (*out)(char, void *), void *arg, va_list *ap) {
   return qcpy(out, arg, p, len);
 }
 
-
 #ifdef MG_ENABLE_LINES
 #line 1 "src/queue.c"
 #endif
+
+
 
 #if (defined(__GNUC__) && (__GNUC__ > 4) ||                                \
      (defined(__GNUC_MINOR__) && __GNUC__ == 4 && __GNUC_MINOR__ >= 1)) || \

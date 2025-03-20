@@ -20,7 +20,7 @@
 #ifndef MGJSON_H
 #define MGJSON_H
 
-#define MG_VERSION "7.14"
+#define MG_VERSION "7.17"
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,7 +52,7 @@ extern "C" {
 #endif
 
 #ifndef MG_ENABLE_CUSTOM_MILLIS
-#define MG_ENABLE_CUSTOM_MILLIS 0
+#define MG_ENABLE_CUSTOM_MILLIS 1
 #endif
 
 #ifndef MG_ENABLE_ASSERT
@@ -83,6 +83,9 @@ bool mg_span(struct mg_str s, struct mg_str *a, struct mg_str *b, char delim);
 
 bool mg_str_to_num(struct mg_str, int base, void *val, size_t val_len);
 
+
+
+
 // Single producer, single consumer non-blocking queue
 
 struct mg_queue {
@@ -98,11 +101,19 @@ void mg_queue_add(struct mg_queue *, size_t);                 // Add new message
 size_t mg_queue_next(struct mg_queue *, char **);  // Get oldest message
 void mg_queue_del(struct mg_queue *, size_t);      // Delete oldest message
 
+
+
+
 typedef void (*mg_pfn_t)(char, void *);                  // Output function
 typedef size_t (*mg_pm_t)(mg_pfn_t, void *, va_list *);  // %M printer
 
 size_t mg_vxprintf(void (*)(char, void *), void *, const char *fmt, va_list *);
 size_t mg_xprintf(void (*fn)(char, void *), void *, const char *fmt, ...);
+
+
+
+
+
 
 // Convenience wrappers around mg_xprintf
 size_t mg_vsnprintf(char *buf, size_t len, const char *fmt, va_list *ap);
@@ -116,6 +127,11 @@ size_t mg_queue_printf(struct mg_queue *, const char *fmt, ...);
 size_t mg_print_base64(void (*out)(char, void *), void *arg, va_list *ap);
 size_t mg_print_esc(void (*out)(char, void *), void *arg, va_list *ap);
 size_t mg_print_hex(void (*out)(char, void *), void *arg, va_list *ap);
+size_t mg_print_ip(void (*out)(char, void *), void *arg, va_list *ap);
+size_t mg_print_ip_port(void (*out)(char, void *), void *arg, va_list *ap);
+size_t mg_print_ip4(void (*out)(char, void *), void *arg, va_list *ap);
+size_t mg_print_ip6(void (*out)(char, void *), void *arg, va_list *ap);
+size_t mg_print_mac(void (*out)(char, void *), void *arg, va_list *ap);
 
 // Various output functions
 void mg_pfn_iobuf(char ch, void *param);  // param: struct mg_iobuf *
@@ -125,14 +141,55 @@ void mg_pfn_stdout(char c, void *param);  // param: ignored
 #define MG_ESC(str) mg_print_esc, 0, (str)
 
 void mg_bzero(volatile unsigned char *buf, size_t len);
-void mg_random(void *buf, size_t len);
+bool mg_random(void *buf, size_t len);
 char *mg_random_str(char *buf, size_t len);
+uint32_t mg_crc32(uint32_t crc, const char *buf, size_t len);
+uint64_t mg_millis(void);  // Return milliseconds since boot
+bool mg_path_is_sane(const struct mg_str path);
 
+#define MG_U32(a, b, c, d)                                         \
+  (((uint32_t) ((a) &255) << 24) | ((uint32_t) ((b) &255) << 16) | \
+   ((uint32_t) ((c) &255) << 8) | (uint32_t) ((d) &255))
 
-#define MG_U32(a, b, c, d)                                           \
-  (((uint32_t) ((a) & 255) << 24) | ((uint32_t) ((b) & 255) << 16) | \
-   ((uint32_t) ((c) & 255) << 8) | (uint32_t) ((d) & 255))
+#define MG_IPV4(a, b, c, d) mg_htonl(MG_U32(a, b, c, d))
 
+// For printing IPv4 addresses: printf("%d.%d.%d.%d\n", MG_IPADDR_PARTS(&ip))
+#define MG_U8P(ADDR) ((uint8_t *) (ADDR))
+#define MG_IPADDR_PARTS(ADDR) \
+  MG_U8P(ADDR)[0], MG_U8P(ADDR)[1], MG_U8P(ADDR)[2], MG_U8P(ADDR)[3]
+
+#define MG_LOAD_BE16(p) \
+  ((uint16_t) (((uint16_t) MG_U8P(p)[0] << 8U) | MG_U8P(p)[1]))
+#define MG_LOAD_BE24(p)                           \
+  ((uint32_t) (((uint32_t) MG_U8P(p)[0] << 16U) | \
+               ((uint32_t) MG_U8P(p)[1] << 8U) | MG_U8P(p)[2]))
+#define MG_LOAD_BE32(p)                           \
+  ((uint32_t) (((uint32_t) MG_U8P(p)[0] << 24U) | \
+               ((uint32_t) MG_U8P(p)[1] << 16U) | \
+               ((uint32_t) MG_U8P(p)[2] << 8U) | MG_U8P(p)[3]))
+#define MG_STORE_BE16(p, n)           \
+  do {                                \
+    MG_U8P(p)[0] = ((n) >> 8U) & 255; \
+    MG_U8P(p)[1] = (n) &255;          \
+  } while (0)
+#define MG_STORE_BE24(p, n)            \
+  do {                                 \
+    MG_U8P(p)[0] = ((n) >> 16U) & 255; \
+    MG_U8P(p)[1] = ((n) >> 8U) & 255;  \
+    MG_U8P(p)[2] = (n) &255;           \
+  } while (0)
+#define MG_STORE_BE32(p, n)            \
+  do {                                 \
+    MG_U8P(p)[0] = ((n) >> 24U) & 255; \
+    MG_U8P(p)[1] = ((n) >> 16U) & 255; \
+    MG_U8P(p)[2] = ((n) >> 8U) & 255;  \
+    MG_U8P(p)[3] = (n) &255;           \
+  } while (0)
+
+uint16_t mg_ntohs(uint16_t net);
+uint32_t mg_ntohl(uint32_t net);
+#define mg_htons(x) mg_ntohs(x)
+#define mg_htonl(x) mg_ntohl(x)
 
 #define MG_REG(x) ((volatile uint32_t *) (x))[0]
 #define MG_BIT(x) (((uint32_t) 1U) << (x))
@@ -141,6 +198,31 @@ char *mg_random_str(char *buf, size_t len);
 #define MG_ROUND_UP(x, a) ((a) == 0 ? (x) : ((((x) + (a) -1) / (a)) * (a)))
 #define MG_ROUND_DOWN(x, a) ((a) == 0 ? (x) : (((x) / (a)) * (a)))
 
+#if defined(__GNUC__)
+#define MG_ARM_DISABLE_IRQ() asm volatile("cpsid i" : : : "memory")
+#define MG_ARM_ENABLE_IRQ() asm volatile("cpsie i" : : : "memory")
+#elif defined(__CCRH__)
+#define MG_RH850_DISABLE_IRQ() __DI()
+#define MG_RH850_ENABLE_IRQ() __EI()
+#else
+#define MG_ARM_DISABLE_IRQ()
+#define MG_ARM_ENABLE_IRQ()
+#endif
+
+#if defined(__CC_ARM)
+#define MG_DSB() __dsb(0xf)
+#elif defined(__ARMCC_VERSION)
+#define MG_DSB() __builtin_arm_dsb(0xf)
+#elif defined(__GNUC__) && defined(__arm__) && defined(__thumb__)
+#define MG_DSB() asm("DSB 0xf")
+#elif defined(__ICCARM__)
+#define MG_DSB() __iar_builtin_DSB()
+#else
+#define MG_DSB()
+#endif
+
+struct mg_addr;
+int mg_check_ip_acl(struct mg_str acl, struct mg_addr *remote_ip);
 
 // Linked list management macros
 #define LIST_ADD_HEAD(type_, head_, elem_) \
@@ -164,44 +246,56 @@ char *mg_random_str(char *buf, size_t len);
   } while (0)
 
 
-struct mg_iobuf {
-  unsigned char *buf;  // Pointer to stored data
-  size_t size;         // Total size available
-  size_t len;          // Current number of bytes
-  size_t align;        // Alignment during allocation
-};
 
-int mg_iobuf_init(struct mg_iobuf *, size_t, size_t);
-int mg_iobuf_resize(struct mg_iobuf *, size_t);
-void mg_iobuf_free(struct mg_iobuf *);
-size_t mg_iobuf_add(struct mg_iobuf *, size_t, const void *, size_t);
-size_t mg_iobuf_del(struct mg_iobuf *, size_t ofs, size_t len);
-
-size_t mg_base64_update(unsigned char input_byte, char *buf, size_t len);
-size_t mg_base64_final(char *buf, size_t len);
-size_t mg_base64_encode(const unsigned char *p, size_t n, char *buf, size_t);
-size_t mg_base64_decode(const char *src, size_t n, char *dst, size_t);
+unsigned short mg_url_port(const char *url);
+int mg_url_is_ssl(const char *url);
+struct mg_str mg_url_host(const char *url);
+struct mg_str mg_url_user(const char *url);
+struct mg_str mg_url_pass(const char *url);
+const char *mg_url_uri(const char *url);
 
 
-#ifndef MG_JSON_MAX_DEPTH
-#define MG_JSON_MAX_DEPTH 30
-#endif
+  struct mg_iobuf {
+    unsigned char *buf;  // Pointer to stored data
+    size_t size;         // Total size available
+    size_t len;          // Current number of bytes
+    size_t align;        // Alignment during allocation
+  };
 
-// Error return values - negative. Successful returns are >= 0
-enum { MG_JSON_TOO_DEEP = -1, MG_JSON_INVALID = -2, MG_JSON_NOT_FOUND = -3 };
-int mg_json_get(struct mg_str json, const char *path, int *toklen);
+  int mg_iobuf_init(struct mg_iobuf *, size_t, size_t);
+  int mg_iobuf_resize(struct mg_iobuf *, size_t);
+  void mg_iobuf_free(struct mg_iobuf *);
+  size_t mg_iobuf_add(struct mg_iobuf *, size_t, const void *, size_t);
+  size_t mg_iobuf_del(struct mg_iobuf *, size_t ofs, size_t len);
 
-struct mg_str mg_json_get_tok(struct mg_str json, const char *path);
-bool mg_json_get_num(struct mg_str json, const char *path, double *v);
-bool mg_json_get_bool(struct mg_str json, const char *path, bool *v);
-long mg_json_get_long(struct mg_str json, const char *path, long dflt);
-char *mg_json_get_str(struct mg_str json, const char *path);
-char *mg_json_get_hex(struct mg_str json, const char *path, int *len);
-char *mg_json_get_b64(struct mg_str json, const char *path, int *len);
 
-bool mg_json_unescape(struct mg_str str, char *buf, size_t len);
-size_t mg_json_next(struct mg_str obj, size_t ofs, struct mg_str *key,
-                    struct mg_str *val);
+  size_t mg_base64_update(unsigned char input_byte, char *buf, size_t len);
+  size_t mg_base64_final(char *buf, size_t len);
+  size_t mg_base64_encode(const unsigned char *p, size_t n, char *buf, size_t);
+  size_t mg_base64_decode(const char *src, size_t n, char *dst, size_t);
+
+
+
+  #ifndef MG_JSON_MAX_DEPTH
+  #define MG_JSON_MAX_DEPTH 30
+  #endif
+  
+  // Error return values - negative. Successful returns are >= 0
+  enum { MG_JSON_TOO_DEEP = -1, MG_JSON_INVALID = -2, MG_JSON_NOT_FOUND = -3 };
+  int mg_json_get(struct mg_str json, const char *path, int *toklen);
+  
+  struct mg_str mg_json_get_tok(struct mg_str json, const char *path);
+  bool mg_json_get_num(struct mg_str json, const char *path, double *v);
+  bool mg_json_get_bool(struct mg_str json, const char *path, bool *v);
+  long mg_json_get_long(struct mg_str json, const char *path, long dflt);
+  char *mg_json_get_str(struct mg_str json, const char *path);
+  char *mg_json_get_hex(struct mg_str json, const char *path, int *len);
+  char *mg_json_get_b64(struct mg_str json, const char *path, int *len);
+  
+  bool mg_json_unescape(struct mg_str str, char *buf, size_t len);
+  size_t mg_json_next(struct mg_str obj, size_t ofs, struct mg_str *key,
+                      struct mg_str *val);
+  
 
 #ifdef __cplusplus
 }
